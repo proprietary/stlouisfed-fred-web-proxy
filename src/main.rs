@@ -15,7 +15,9 @@ use tower_http::{
 };
 
 use stlouisfed_fred_web_proxy::{
-    entities::{FredResponseObservation, GetObservationsParams, RealtimeObservation},
+    entities::{
+        FredResponseObservation, FredResponseSeriess, GetObservationsParams, RealtimeObservation,
+    },
     local_cache::RealtimeObservationsDatabase,
 };
 
@@ -117,6 +119,8 @@ async fn get_observations_handler(
 
         // some cached but possibly incomplete
         (_, Some(first_item), Some(last_item)) => {
+            let mut is_incomplete: bool = false;
+
             // check left side
             if let Some(observation_start) = params.observation_start {
                 if first_item.date > observation_start {
@@ -132,12 +136,14 @@ async fn get_observations_handler(
                     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
                     if more.len() > 0 {
                         observations.extend_from_slice(&more);
+                        is_incomplete = true;
                     }
                 }
             }
             observations.extend_from_slice(&cached);
             // check right side
-            if let Some(observation_end) = params.observation_end {
+            if !is_incomplete && params.observation_end.is_some() {
+                let observation_end = params.observation_end.unwrap();
                 if last_item.date < observation_end {
                     let more = request_observations_from_fred(
                         &app_state,
@@ -149,8 +155,27 @@ async fn get_observations_handler(
                     )
                     .await
                     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-                    observations.extend_from_slice(&more);
+                    if more.len() > 0 {
+                        observations.extend_from_slice(&more);
+                        is_incomplete = true;
+                    }
                 }
+            }
+
+            if is_incomplete {
+                observations = request_observations_from_fred(
+                    &app_state,
+                    &params.series_id,
+                    params.observation_start,
+                    params.observation_end,
+                    None,
+                    None,
+                )
+                .await
+                .map_err(|e| match e.status() {
+                    Some(status) => StatusCode::from(status),
+                    None => StatusCode::SERVICE_UNAVAILABLE,
+                })?;
             }
         }
     }
@@ -209,7 +234,7 @@ async fn request_observations_from_fred(
             }
             pairs.finish();
         }
-        let req = app_state.client.get(url).send().await;
+        let req = app_state.client.clone().get(url).send().await;
         let output = req?.json::<FredResponseObservation>().await?;
         output.observations.iter().for_each(|os| {
             observations.push(RealtimeObservation {
@@ -224,4 +249,29 @@ async fn request_observations_from_fred(
         }
     }
     Ok(observations)
+}
+
+/// Get an economic data series (really, just the metadata).
+/// See: https://fred.stlouisfed.org/docs/api/fred/series.html
+#[allow(dead_code)]
+async fn request_series_from_fred(
+    app_state: &AppState,
+    series_id: &str,
+) -> Result<FredResponseSeriess, Box<dyn std::error::Error>> {
+    let client = app_state.client.clone();
+    let url = reqwest::Url::parse_with_params(
+        "https://api.stlouisfed.org/fred/series",
+        &[
+            ("api_key", &app_state.fred_api_key),
+            ("file_type", &"json".to_string()),
+            ("series_id", &series_id.to_string()),
+        ][..],
+    )?;
+    let output = client
+        .get(url)
+        .send()
+        .await?
+        .json::<FredResponseSeriess>()
+        .await?;
+    return Ok(output);
 }
