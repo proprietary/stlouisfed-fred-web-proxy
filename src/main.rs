@@ -1,7 +1,5 @@
 use std::net::{IpAddr, Ipv4Addr};
 
-use chrono::NaiveDate;
-
 use axum::{
     extract::{Query, State},
     response::IntoResponse,
@@ -9,11 +7,13 @@ use axum::{
     Router,
 };
 use hyper::StatusCode;
-use serde::{Deserialize, Serialize};
 use tower_http::cors::{Any, CorsLayer};
 
-use stlouisfed_fred_web_proxy::{entities, local_cache::RealtimeObservationsDatabase};
-use stlouisfed_fred_web_proxy::{local_cache::FREDDatabase, yyyy_mm_dd_date_format};
+use stlouisfed_fred_web_proxy::local_cache::FREDDatabase;
+use stlouisfed_fred_web_proxy::{
+    entities::{FredResponseObservation, GetObservationsParams, RealtimeObservation},
+    local_cache::RealtimeObservationsDatabase,
+};
 
 #[derive(Default, Clone)]
 struct AppState {
@@ -58,7 +58,7 @@ async fn get_observations_handler(
     Query(params): Query<GetObservationsParams>,
     State(app_state): State<AppState>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    let mut observations = std::vec::Vec::<entities::RealtimeObservation>::new();
+    let mut observations = std::vec::Vec::<RealtimeObservation>::new();
     let cached = app_state
         .realtime_observations_db
         .get_observations(
@@ -116,7 +116,7 @@ async fn get_observations_handler(
             }
         };
         output.observations.iter().for_each(|os| {
-            observations.push(entities::RealtimeObservation {
+            observations.push(RealtimeObservation {
                 date: os.date,
                 value: os.value.clone(),
             });
@@ -132,50 +132,4 @@ async fn get_observations_handler(
         .put_observations(&params.series_id, &observations)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     return Ok(axum::Json(observations));
-}
-
-#[derive(Debug, Deserialize)]
-struct GetObservationsParams {
-    series_id: String,
-
-    #[serde(with = "yyyy_mm_dd_date_format")]
-    observation_start: NaiveDate,
-
-    #[serde(with = "yyyy_mm_dd_date_format")]
-    observation_end: NaiveDate,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct ObservationItem {
-    #[serde(with = "yyyy_mm_dd_date_format")]
-    date: NaiveDate,
-
-    value: String,
-
-    #[serde(with = "yyyy_mm_dd_date_format")]
-    realtime_start: NaiveDate,
-
-    #[serde(with = "yyyy_mm_dd_date_format")]
-    realtime_end: NaiveDate,
-}
-
-#[derive(Default, Debug, Deserialize)]
-struct FredResponseObservation {
-    #[serde(with = "yyyy_mm_dd_date_format")]
-    #[allow(dead_code)]
-    realtime_start: NaiveDate,
-
-    #[serde(with = "yyyy_mm_dd_date_format")]
-    #[allow(dead_code)]
-    realtime_end: NaiveDate,
-
-    #[allow(dead_code)]
-    count: usize,
-
-    #[allow(dead_code)]
-    offset: usize,
-
-    limit: usize,
-
-    observations: std::vec::Vec<ObservationItem>,
 }
