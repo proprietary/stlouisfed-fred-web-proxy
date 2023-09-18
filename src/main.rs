@@ -117,7 +117,6 @@ async fn get_observations_handler(
 
         // some cached but possibly incomplete
         (_, Some(first_item), Some(last_item)) => {
-            observations.extend_from_slice(&cached);
             // check left side
             if let Some(observation_start) = params.observation_start {
                 if first_item.date > observation_start {
@@ -125,7 +124,7 @@ async fn get_observations_handler(
                         &app_state,
                         &params.series_id,
                         Some(observation_start),
-                        Some(first_item.date),
+                        Some(first_item.date - chrono::Duration::days(1)),
                         None,
                         None,
                     )
@@ -136,13 +135,14 @@ async fn get_observations_handler(
                     }
                 }
             }
+            observations.extend_from_slice(&cached);
             // check right side
             if let Some(observation_end) = params.observation_end {
                 if last_item.date < observation_end {
                     let more = request_observations_from_fred(
                         &app_state,
                         &params.series_id,
-                        Some(last_item.date),
+                        Some(last_item.date + chrono::Duration::days(1)),
                         Some(observation_end),
                         None,
                         None,
