@@ -60,6 +60,22 @@ async fn get_observations_handler(
     State(app_state): State<AppState>,
 ) -> Result<impl IntoResponse, StatusCode> {
     let mut observations = std::vec::Vec::<RealtimeObservation>::new();
+    // if user requested realtime/"ALFRED" data, then do not use local cache
+    if params.realtime_start.is_some() || params.realtime_end.is_some() {
+        // bypass cache
+        // because not willing to cache different versions of the same data over and over
+        let fresh = request_observations_from_fred(
+            &app_state,
+            &params.series_id,
+            params.observation_start,
+            params.observation_end,
+            params.realtime_start,
+            params.realtime_end,
+        )
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        return Ok(axum::Json(fresh));
+    }
     let cached = app_state
         .realtime_observations_db
         .get_observations(
@@ -85,6 +101,8 @@ async fn get_observations_handler(
                         &params.series_id,
                         Some(observation_start),
                         Some(first_item.date),
+                        None,
+                        None,
                     )
                     .await
                     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -99,6 +117,8 @@ async fn get_observations_handler(
                         &params.series_id,
                         Some(last_item.date),
                         Some(observation_end),
+                        None,
+                        None,
                     )
                     .await
                     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -113,6 +133,8 @@ async fn get_observations_handler(
         &params.series_id,
         params.observation_start,
         params.observation_end,
+        None,
+        None,
     )
     .await
     .map_err(|e| match e.status() {
@@ -132,6 +154,8 @@ async fn request_observations_from_fred(
     series_id: &str,
     observation_start: Option<NaiveDate>,
     observation_end: Option<NaiveDate>,
+    realtime_start: Option<NaiveDate>,
+    realtime_end: Option<NaiveDate>,
 ) -> Result<Vec<RealtimeObservation>, reqwest::Error> {
     let mut observations = Vec::<RealtimeObservation>::new();
     let mut offset: usize = 0usize;
@@ -160,6 +184,12 @@ async fn request_observations_from_fred(
                     "observation_end",
                     &observation_end.format(FORMAT).to_string(),
                 );
+            }
+            if let Some(realtime_start) = realtime_start {
+                pairs.append_pair("realtime_start", &realtime_start.format(FORMAT).to_string());
+            }
+            if let Some(realtime_end) = realtime_end {
+                pairs.append_pair("realtime_end", &realtime_end.format(FORMAT).to_string());
             }
             if offset > 0 {
                 pairs.append_pair("offset", &offset.to_string());
