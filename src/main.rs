@@ -84,6 +84,24 @@ async fn get_observations_handler(
             // cache miss
         }
     }
+    observations = request_observations_from_fred(&params, &app_state)
+        .await
+        .map_err(|e| match e.status() {
+            Some(status) => StatusCode::from(status),
+            None => StatusCode::SERVICE_UNAVAILABLE,
+        })?;
+    app_state
+        .realtime_observations_db
+        .put_observations(&params.series_id, &observations)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    return Ok(axum::Json(observations));
+}
+
+async fn request_observations_from_fred(
+    params: &GetObservationsParams,
+    app_state: &AppState,
+) -> Result<Vec<RealtimeObservation>, reqwest::Error> {
+    let mut observations = Vec::<RealtimeObservation>::new();
     let mut offset: usize = 0usize;
     const LIMIT: usize = 10_000;
     loop {
@@ -105,16 +123,7 @@ async fn get_observations_handler(
             pairs.finish();
         }
         let req = app_state.client.get(url).send().await;
-        let output = match req {
-            Ok(res) => res.json::<FredResponseObservation>().await.unwrap(),
-            Err(err) => {
-                if let Some(status) = err.status() {
-                    // forward status code from FRED's API
-                    return Err(status);
-                }
-                return Err(StatusCode::SERVICE_UNAVAILABLE);
-            }
-        };
+        let output = req?.json::<FredResponseObservation>().await?;
         output.observations.iter().for_each(|os| {
             observations.push(RealtimeObservation {
                 date: os.date,
@@ -127,9 +136,5 @@ async fn get_observations_handler(
             break;
         }
     }
-    app_state
-        .realtime_observations_db
-        .put_observations(&params.series_id, &observations)
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    return Ok(axum::Json(observations));
+    Ok(observations)
 }
