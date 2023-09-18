@@ -100,6 +100,19 @@ async fn get_observations_handler(
     match (cached.len(), cached.get(0), cached.last()) {
         (0, _, _) | (_, None, None) | (_, None, Some(_)) | (_, Some(_), None) => {
             // cache miss
+            observations = request_observations_from_fred(
+                &app_state,
+                &params.series_id,
+                params.observation_start,
+                params.observation_end,
+                None,
+                None,
+            )
+            .await
+            .map_err(|e| match e.status() {
+                Some(status) => StatusCode::from(status),
+                None => StatusCode::SERVICE_UNAVAILABLE,
+            })?;
         }
 
         // some cached but possibly incomplete
@@ -118,7 +131,9 @@ async fn get_observations_handler(
                     )
                     .await
                     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-                    observations.extend_from_slice(&more);
+                    if more.len() > 0 {
+                        observations.extend_from_slice(&more);
+                    }
                 }
             }
             // check right side
@@ -137,22 +152,8 @@ async fn get_observations_handler(
                     observations.extend_from_slice(&more);
                 }
             }
-            return Ok(axum::Json(observations));
         }
     }
-    observations = request_observations_from_fred(
-        &app_state,
-        &params.series_id,
-        params.observation_start,
-        params.observation_end,
-        None,
-        None,
-    )
-    .await
-    .map_err(|e| match e.status() {
-        Some(status) => StatusCode::from(status),
-        None => StatusCode::SERVICE_UNAVAILABLE,
-    })?;
     app_state
         .realtime_observations_db
         .put_observations(&params.series_id, &observations)
