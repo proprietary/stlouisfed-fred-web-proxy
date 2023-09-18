@@ -14,12 +14,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tower_http::cors::{Any, CorsLayer};
 
-use stlouisfed_fred_web_proxy::yyyy_mm_dd_date_format;
+use stlouisfed_fred_web_proxy::{entities, local_cache::RealtimeObservationsDatabase};
+use stlouisfed_fred_web_proxy::{local_cache::FREDDatabase, yyyy_mm_dd_date_format};
 
 #[derive(Default, Clone)]
 struct AppState {
     client: reqwest::Client,
     fred_api_key: String,
+    realtime_observations_db: RealtimeObservationsDatabase,
 }
 
 #[tokio::main]
@@ -34,12 +36,20 @@ async fn main() {
         .unwrap_or("9001".to_string())
         .parse()
         .unwrap();
+    let sqlite_db = std::path::PathBuf::from(
+        std::env::var("FRED_OBSERVATIONS_DB").expect("Missing FRED_OBSERVATIONS_DB env var"),
+    );
+    if !sqlite_db.exists() {
+        panic!("Provided sqlite DB path does not exist");
+    }
     let app_state = AppState {
         client: client,
         fred_api_key: api_key,
+        realtime_observations_db: RealtimeObservationsDatabase::new(&sqlite_db),
     };
+    app_state.realtime_observations_db.create_tables().unwrap();
     let app = Router::new()
-        .route("/v0/observations", get(get_observations))
+        .route("/v0/observations", get(get_observations_handler))
         .layer(CorsLayer::new().allow_origin(Any))
         .with_state(app_state);
     let bind_addr: std::net::SocketAddr =
@@ -50,25 +60,36 @@ async fn main() {
         .unwrap();
 }
 
-async fn get_observations(
+async fn get_observations_handler(
     Query(params): Query<GetObservationsParams>,
     State(app_state): State<AppState>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    let cached =
-        query_local_database(&params.series_id).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let mut observations = std::vec::Vec::<entities::RealtimeObservation>::new();
+    let cached = app_state
+        .realtime_observations_db
+        .get_observations(
+            &params.series_id,
+            Some(params.observation_start),
+            Some(params.observation_end),
+        )
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     match (cached.get(0), cached.iter().last()) {
         (Some(first_item), Some(last_item)) => {
-            if first_item.date >= params.observation_start
-                && last_item.date <= params.observation_end
+            if first_item.date <= params.observation_start
+                && last_item.date >= params.observation_end
             {
-                return Ok(axum::Json(cached));
+                cached.iter().for_each(|os| {
+                    if os.date >= params.observation_start && os.date <= params.observation_end {
+                        observations.push(os.clone());
+                    }
+                });
+                return Ok(axum::Json(observations));
             }
         }
         (_, _) => {
-            // error
+            // cache miss
         }
     }
-    let mut observations = std::vec::Vec::<ObservationItem>::new();
     let mut offset: usize = 0usize;
     const LIMIT: usize = 10_000;
     loop {
@@ -100,31 +121,23 @@ async fn get_observations(
                 return Err(StatusCode::SERVICE_UNAVAILABLE);
             }
         };
-        observations.extend_from_slice(&output.observations);
+        output.observations.iter().for_each(|os| {
+            observations.push(entities::RealtimeObservation {
+                date: os.date,
+                value: os.value.clone(),
+            });
+        });
         if output.observations.len() >= output.limit {
-            offset += output.count;
+            offset += output.observations.len();
         } else {
             break;
         }
     }
-    put_in_local_database(&params.series_id, &observations)
+    app_state
+        .realtime_observations_db
+        .put_observations(&params.series_id, &observations)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     return Ok(axum::Json(observations));
-}
-
-fn query_local_database(
-    series_id: &str,
-) -> Result<std::vec::Vec<ObservationItem>, Box<dyn std::error::Error>> {
-    // unimplemented!();
-    Ok(vec![])
-}
-
-fn put_in_local_database(
-    series_id: &str,
-    items: &[ObservationItem],
-) -> Result<(), Box<dyn std::error::Error>> {
-    // unimplemented!();
-    Ok(())
 }
 
 #[derive(Debug, Deserialize)]
