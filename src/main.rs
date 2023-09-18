@@ -9,13 +9,12 @@ use axum::{
 use hyper::StatusCode;
 use tower_http::cors::{Any, CorsLayer};
 
-use stlouisfed_fred_web_proxy::local_cache::FREDDatabase;
 use stlouisfed_fred_web_proxy::{
     entities::{FredResponseObservation, GetObservationsParams, RealtimeObservation},
     local_cache::RealtimeObservationsDatabase,
 };
 
-#[derive(Default, Clone)]
+#[derive(Clone)]
 struct AppState {
     client: reqwest::Client,
     fred_api_key: String,
@@ -23,7 +22,7 @@ struct AppState {
 }
 
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client = reqwest::Client::new();
     let api_key = std::env::var("FRED_API_KEY").expect("Missing FRED_API_KEY env var");
     let port: u16 = std::env::var("SERVER_PORT")
@@ -39,9 +38,9 @@ async fn main() {
     let app_state = AppState {
         client: client,
         fred_api_key: api_key,
-        realtime_observations_db: RealtimeObservationsDatabase::new(&sqlite_db),
+        realtime_observations_db: RealtimeObservationsDatabase::new(&sqlite_db).await?,
     };
-    app_state.realtime_observations_db.create_tables().unwrap();
+    app_state.realtime_observations_db.create_tables().await?;
     let app = Router::new()
         .route("/v0/observations", get(get_observations_handler))
         .layer(CorsLayer::new().allow_origin(Any))
@@ -52,6 +51,7 @@ async fn main() {
         .serve(app.into_make_service())
         .await
         .unwrap();
+    Ok(())
 }
 
 async fn get_observations_handler(
@@ -66,6 +66,7 @@ async fn get_observations_handler(
             Some(params.observation_start),
             Some(params.observation_end),
         )
+        .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     match (cached.get(0), cached.iter().last()) {
         (Some(first_item), Some(last_item)) => {
@@ -93,6 +94,7 @@ async fn get_observations_handler(
     app_state
         .realtime_observations_db
         .put_observations(&params.series_id, &observations)
+        .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     return Ok(axum::Json(observations));
 }
