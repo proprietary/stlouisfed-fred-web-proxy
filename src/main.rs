@@ -1,8 +1,6 @@
-use std::{
-    net::{IpAddr, Ipv4Addr},
-};
+use std::net::{IpAddr, Ipv4Addr};
 
-use chrono::{DateTime, Utc, NaiveDate};
+use chrono::{DateTime, NaiveDate, Utc};
 
 use axum::{
     extract::{Query, State},
@@ -11,10 +9,10 @@ use axum::{
     routing::get,
     Json, Router,
 };
-
 use hyper::StatusCode;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use tower_http::cors::{Any, CorsLayer};
 
 use stlouisfed_fred_web_proxy::yyyy_mm_dd_date_format;
 
@@ -42,6 +40,7 @@ async fn main() {
     };
     let app = Router::new()
         .route("/v0/observations", get(get_observations))
+        .layer(CorsLayer::new().allow_origin(Any))
         .with_state(app_state);
     let bind_addr: std::net::SocketAddr =
         std::net::SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), port);
@@ -59,7 +58,9 @@ async fn get_observations(
         query_local_database(&params.series_id).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     match (cached.get(0), cached.iter().last()) {
         (Some(first_item), Some(last_item)) => {
-            if first_item.date >= params.observation_start && last_item.date <= params.observation_end {
+            if first_item.date >= params.observation_start
+                && last_item.date <= params.observation_end
+            {
                 return Ok(axum::Json(cached));
             }
         }
@@ -69,7 +70,7 @@ async fn get_observations(
     }
     let mut observations = std::vec::Vec::<ObservationItem>::new();
     let mut offset: usize = 0usize;
-    const limit: usize = 10_000;
+    const LIMIT: usize = 10_000;
     loop {
         let mut url =
             reqwest::Url::parse("https://api.stlouisfed.org/fred/series/observations").unwrap();
@@ -79,7 +80,7 @@ async fn get_observations(
             pairs
                 .append_pair("api_key", &app_state.fred_api_key)
                 .append_pair("file_type", "json")
-                .append_pair("limit", &limit.to_string())
+                .append_pair("limit", &LIMIT.to_string())
                 .append_pair("series_id", &params.series_id)
                 .append_pair("observation_start", &params.observation_start.to_string())
                 .append_pair("observation_end", &params.observation_end.to_string());
@@ -132,21 +133,21 @@ struct GetObservationsParams {
 
     #[serde(with = "yyyy_mm_dd_date_format")]
     observation_start: NaiveDate,
-    
+
     #[serde(with = "yyyy_mm_dd_date_format")]
     observation_end: NaiveDate,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ObservationItem {
-        #[serde(with = "yyyy_mm_dd_date_format")]
+    #[serde(with = "yyyy_mm_dd_date_format")]
     date: NaiveDate,
-    
+
     value: String,
 
     #[serde(with = "yyyy_mm_dd_date_format")]
     realtime_start: NaiveDate,
-    
+
     #[serde(with = "yyyy_mm_dd_date_format")]
     realtime_end: NaiveDate,
 }
@@ -155,16 +156,15 @@ struct ObservationItem {
 struct FredResponseObservation {
     #[serde(with = "yyyy_mm_dd_date_format")]
     realtime_start: NaiveDate,
-    
+
     #[serde(with = "yyyy_mm_dd_date_format")]
     realtime_end: NaiveDate,
-    
+
     count: usize,
-    
+
     offset: usize,
-    
+
     limit: usize,
-    
+
     observations: std::vec::Vec<ObservationItem>,
 }
-
