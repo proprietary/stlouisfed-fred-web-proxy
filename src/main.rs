@@ -6,6 +6,7 @@ use axum::{
     routing::get,
     Router,
 };
+use chrono::NaiveDate;
 use hyper::StatusCode;
 use tower_http::cors::{Any, CorsLayer};
 
@@ -63,34 +64,61 @@ async fn get_observations_handler(
         .realtime_observations_db
         .get_observations(
             &params.series_id,
-            Some(params.observation_start),
-            Some(params.observation_end),
+            params.observation_start,
+            params.observation_end,
         )
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    match (cached.get(0), cached.iter().last()) {
-        (Some(first_item), Some(last_item)) => {
-            if first_item.date <= params.observation_start
-                && last_item.date >= params.observation_end
-            {
-                cached.iter().for_each(|os| {
-                    if os.date >= params.observation_start && os.date <= params.observation_end {
-                        observations.push(os.clone());
-                    }
-                });
-                return Ok(axum::Json(observations));
-            }
-        }
-        (_, _) => {
+    match (cached.len(), cached.get(0), cached.last()) {
+        (0, _, _) | (_, None, None) | (_, None, Some(_)) | (_, Some(_), None) => {
             // cache miss
         }
+
+        // some cached but possibly incomplete
+        (_, Some(first_item), Some(last_item)) => {
+            observations.extend_from_slice(&cached);
+            // check left side
+            if let Some(observation_start) = params.observation_start {
+                if first_item.date > observation_start {
+                    let more = request_observations_from_fred(
+                        &app_state,
+                        &params.series_id,
+                        Some(observation_start),
+                        Some(first_item.date),
+                    )
+                    .await
+                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+                    observations.extend_from_slice(&more);
+                }
+            }
+            // check right side
+            if let Some(observation_end) = params.observation_end {
+                if last_item.date < observation_end {
+                    let more = request_observations_from_fred(
+                        &app_state,
+                        &params.series_id,
+                        Some(last_item.date),
+                        Some(observation_end),
+                    )
+                    .await
+                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+                    observations.extend_from_slice(&more);
+                }
+            }
+            return Ok(axum::Json(observations));
+        }
     }
-    observations = request_observations_from_fred(&params, &app_state)
-        .await
-        .map_err(|e| match e.status() {
-            Some(status) => StatusCode::from(status),
-            None => StatusCode::SERVICE_UNAVAILABLE,
-        })?;
+    observations = request_observations_from_fred(
+        &app_state,
+        &params.series_id,
+        params.observation_start,
+        params.observation_end,
+    )
+    .await
+    .map_err(|e| match e.status() {
+        Some(status) => StatusCode::from(status),
+        None => StatusCode::SERVICE_UNAVAILABLE,
+    })?;
     app_state
         .realtime_observations_db
         .put_observations(&params.series_id, &observations)
@@ -100,12 +128,15 @@ async fn get_observations_handler(
 }
 
 async fn request_observations_from_fred(
-    params: &GetObservationsParams,
     app_state: &AppState,
+    series_id: &str,
+    observation_start: Option<NaiveDate>,
+    observation_end: Option<NaiveDate>,
 ) -> Result<Vec<RealtimeObservation>, reqwest::Error> {
     let mut observations = Vec::<RealtimeObservation>::new();
     let mut offset: usize = 0usize;
     const LIMIT: usize = 10_000;
+    const FORMAT: &'static str = "%Y-%m-%d";
     loop {
         let mut url =
             reqwest::Url::parse("https://api.stlouisfed.org/fred/series/observations").unwrap();
@@ -116,9 +147,20 @@ async fn request_observations_from_fred(
                 .append_pair("api_key", &app_state.fred_api_key)
                 .append_pair("file_type", "json")
                 .append_pair("limit", &LIMIT.to_string())
-                .append_pair("series_id", &params.series_id)
-                .append_pair("observation_start", &params.observation_start.to_string())
-                .append_pair("observation_end", &params.observation_end.to_string());
+                .append_pair("sort_order", "asc")
+                .append_pair("series_id", series_id);
+            if let Some(observation_start) = observation_start {
+                pairs.append_pair(
+                    "observation_start",
+                    &observation_start.format(FORMAT).to_string(),
+                );
+            }
+            if let Some(observation_end) = observation_end {
+                pairs.append_pair(
+                    "observation_end",
+                    &observation_end.format(FORMAT).to_string(),
+                );
+            }
             if offset > 0 {
                 pairs.append_pair("offset", &offset.to_string());
             }
