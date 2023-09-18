@@ -7,6 +7,7 @@ use axum::{
     Router,
 };
 use chrono::NaiveDate;
+use clap::Parser;
 use hyper::StatusCode;
 use tower_http::cors::{Any, CorsLayer};
 
@@ -22,24 +23,31 @@ struct AppState {
     realtime_observations_db: RealtimeObservationsDatabase,
 }
 
+#[derive(Parser)]
+#[command(author, version, about, long_about = None)]
+struct CommandLineInterface {
+    /// Port the HTTP server listens on
+    #[arg(short, long, default_value_t = 9001)]
+    port: u16,
+
+    /// Path to embedded database which stores previously-fetched FRED data
+    #[arg(long, value_name = "FILE", env = "FRED_OBSERVATIONS_DB")]
+    sqlite_db: std::path::PathBuf,
+
+    /// Free API key from https://fred.stlouisfed.org
+    #[arg(short, long, env = "FRED_API_KEY")]
+    fred_api_key: String,
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let cli = CommandLineInterface::parse();
     let client = reqwest::Client::new();
-    let api_key = std::env::var("FRED_API_KEY").expect("Missing FRED_API_KEY env var");
-    let port: u16 = std::env::var("SERVER_PORT")
-        .unwrap_or("9001".to_string())
-        .parse()
-        .unwrap();
-    let sqlite_db = std::path::PathBuf::from(
-        std::env::var("FRED_OBSERVATIONS_DB").expect("Missing FRED_OBSERVATIONS_DB env var"),
-    );
-    if !sqlite_db.exists() {
-        panic!("Provided sqlite DB path does not exist");
-    }
+    let port = cli.port;
     let app_state = AppState {
         client: client,
-        fred_api_key: api_key,
-        realtime_observations_db: RealtimeObservationsDatabase::new(&sqlite_db).await?,
+        fred_api_key: cli.fred_api_key,
+        realtime_observations_db: RealtimeObservationsDatabase::new(&cli.sqlite_db).await?,
     };
     app_state.realtime_observations_db.create_tables().await?;
     let app = Router::new()
