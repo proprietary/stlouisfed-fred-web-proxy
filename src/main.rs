@@ -9,7 +9,10 @@ use axum::{
 use chrono::NaiveDate;
 use clap::Parser;
 use hyper::StatusCode;
-use tower_http::cors::{Any, CorsLayer};
+use tower_http::{
+    compression::CompressionLayer,
+    cors::{Any, CorsLayer},
+};
 
 use stlouisfed_fred_web_proxy::{
     entities::{FredResponseObservation, GetObservationsParams, RealtimeObservation},
@@ -53,6 +56,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = Router::new()
         .route("/v0/observations", get(get_observations_handler))
         .layer(CorsLayer::new().allow_origin(Any))
+        .layer(CompressionLayer::new().gzip(true))
         .with_state(app_state);
     let bind_addr: std::net::SocketAddr =
         std::net::SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), port);
