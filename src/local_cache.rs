@@ -1,6 +1,6 @@
+use crate::entities::RealtimeObservation;
 use chrono::NaiveDate;
 use sqlite::{self, State};
-use crate::entities::RealtimeObservation;
 
 pub trait FREDDatabase {
     fn new(path: &std::path::Path) -> Self;
@@ -126,4 +126,3 @@ impl RealtimeObservationsDatabase {
         Ok(())
     }
 }
-

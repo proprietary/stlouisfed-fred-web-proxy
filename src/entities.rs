@@ -1,6 +1,6 @@
-use chrono::NaiveDate;
-use serde::{self, Serialize, Deserialize};
 use crate::yyyy_mm_dd_date_format;
+use chrono::NaiveDate;
+use serde::{self, Deserialize, Serialize};
 
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]
 pub struct RealtimeObservation {

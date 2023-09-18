@@ -1,17 +1,15 @@
 use std::net::{IpAddr, Ipv4Addr};
 
-use chrono::{DateTime, NaiveDate, Utc};
+use chrono::NaiveDate;
 
 use axum::{
     extract::{Query, State},
-    http,
-    response::{IntoResponse, Response},
+    response::IntoResponse,
     routing::get,
-    Json, Router,
+    Router,
 };
 use hyper::StatusCode;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
 use tower_http::cors::{Any, CorsLayer};
 
 use stlouisfed_fred_web_proxy::{entities, local_cache::RealtimeObservationsDatabase};
@@ -28,10 +26,6 @@ struct AppState {
 async fn main() {
     let client = reqwest::Client::new();
     let api_key = std::env::var("FRED_API_KEY").expect("Missing FRED_API_KEY env var");
-    // let port: u16 = std::env::var("SERVER_PORT")
-    //     .expect("Missing SERVER_PORT env var")
-    //     .parse()
-    //     .expect("Environment variable SERVER_PORT is not an integer");
     let port: u16 = std::env::var("SERVER_PORT")
         .unwrap_or("9001".to_string())
         .parse()
@@ -168,13 +162,17 @@ struct ObservationItem {
 #[derive(Default, Debug, Deserialize)]
 struct FredResponseObservation {
     #[serde(with = "yyyy_mm_dd_date_format")]
+    #[allow(dead_code)]
     realtime_start: NaiveDate,
 
     #[serde(with = "yyyy_mm_dd_date_format")]
+    #[allow(dead_code)]
     realtime_end: NaiveDate,
 
+    #[allow(dead_code)]
     count: usize,
 
+    #[allow(dead_code)]
     offset: usize,
 
     limit: usize,
