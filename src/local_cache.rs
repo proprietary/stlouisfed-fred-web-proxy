@@ -57,19 +57,24 @@ impl RealtimeObservationsDatabase {
             r#"
         select `date`, `value`
         from realtime_observations
-        where date(`date`) >= date(?)
-            and date(`date`) <= date(?)
-            and `series_id` = ?
-        order by `date` asc
+        where `series_id` = ?
         "#,
         );
         let stream = query
-            .bind(since.unwrap_or(NaiveDate::MIN))
-            .bind(until.unwrap_or(NaiveDate::MAX))
             .bind(&series_id.to_string())
             .fetch_all(&self.pool.clone())
             .await?;
-        Ok(stream)
+        let since_ = since.unwrap_or(NaiveDate::MIN);
+        let until_ = until.unwrap_or(NaiveDate::MAX);
+        let mut within_date_bounds = Vec::<RealtimeObservation>::new();
+        within_date_bounds.reserve(stream.len());
+        stream.iter().for_each(|x| {
+            if x.date >= since_ && x.date <= until_ {
+                within_date_bounds.push(x.clone());
+            }
+        });
+        within_date_bounds.sort_by(|a, b| a.date.cmp(&b.date));
+        Ok(within_date_bounds)
     }
 
     pub async fn put_observations(
@@ -77,8 +82,8 @@ impl RealtimeObservationsDatabase {
         series_id: &str,
         rows: &[RealtimeObservation],
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let mut conn = self.pool.clone().acquire().await?;
-        for row in rows.iter() {
+        // let mut conn = self.pool.clone().acquire().await?;
+        for row in rows {
             let _ = sqlx::query(
                 r#"
             insert into realtime_observations (`series_id`, `date`, `value`)
@@ -89,7 +94,7 @@ impl RealtimeObservationsDatabase {
             .bind(&series_id.to_string())
             .bind(row.date)
             .bind(row.value.clone())
-            .execute(&mut *conn)
+            .execute(&self.pool.clone())
             .await?;
         }
         Ok(())
@@ -99,7 +104,7 @@ impl RealtimeObservationsDatabase {
         &self,
         series: &FredEconomicDataSeries,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let mut conn = self.pool.clone().acquire().await?;
+        // let mut conn = self.pool.clone().acquire().await?;
         sqlx::query(
             r#"
         insert into economic_data_series (id, last_updated, observation_start, observation_end)
@@ -110,7 +115,7 @@ impl RealtimeObservationsDatabase {
         .bind(series.last_updated)
         .bind(series.observation_start)
         .bind(series.observation_end)
-        .execute(&mut *conn)
+        .execute(&self.pool.clone())
         .await?;
         Ok(())
     }

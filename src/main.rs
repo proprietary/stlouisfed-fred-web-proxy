@@ -182,6 +182,6 @@ async fn get_observations_handler(
         .await
         .map_err(|_| FredApiError::default())?;
     let mut observations = cached;
-    observations.extend_from_slice(&fresh_observations);    
+    observations.extend_from_slice(&fresh_observations);
     Ok(axum::Json(observations))
 }
