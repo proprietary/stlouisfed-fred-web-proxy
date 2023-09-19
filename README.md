@@ -43,12 +43,19 @@ $ curl -s 'http://localhost:9001/v0/observation?series_id=SP500&observation_star
 
 This endpoint corresponds to the similar `observations` endpoint, as you can learn more about on [official FRED docs](https://fred.stlouisfed.org/docs/api/fred/series_observations.html).
 
-Available parameters (as query string):
+Available parameters (as query string parameters):
 - `series_id`
 - `observation_start`
 - `observation_end`
 
 Returns an array of dates and values in JSON format.
+
+### `/v0/series`
+
+This is metadata about an economic series. It forwards the result from FRED's `series` endpoint ([official FRED docs](https://fred.stlouisfed.org/docs/api/fred/series.html)).
+
+Available parameters (as query string parameters):
+- `series_id`
 
 ## License
 
