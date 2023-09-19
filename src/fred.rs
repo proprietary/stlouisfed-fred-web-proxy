@@ -1,9 +1,90 @@
 use chrono::NaiveDate;
 use hyper::StatusCode;
 
-use crate::entities::{
-    FredResponseObservation, FredResponseSeries, FredResponseSeriesWithError, RealtimeObservation,
+use axum::{
+    response::{IntoResponse, Response},
+    Json,
 };
+
+use crate::entities::{
+    FredApiResponse, FredResponseError, FredResponseObservation, FredResponseSeries,
+    RealtimeObservation,
+};
+
+#[derive(Debug)]
+pub struct FredApiError {
+    pub status_code: StatusCode,
+    pub error_message: Option<String>,
+}
+
+impl std::error::Error for FredApiError {}
+
+impl Default for FredApiError {
+    fn default() -> Self {
+        FredApiError {
+            status_code: StatusCode::INTERNAL_SERVER_ERROR,
+            error_message: None,
+        }
+    }
+}
+
+impl std::fmt::Display for FredApiError {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        if let Some(ref msg) = self.error_message {
+            f.write_str(&format!(
+                "FRED API errored with status code {}: {}",
+                self.status_code, msg
+            ))
+        } else {
+            f.write_str(&format!(
+                "FRED API errored with status code {}",
+                self.status_code
+            ))
+        }
+    }
+}
+
+impl From<reqwest::Error> for FredApiError {
+    fn from(value: reqwest::Error) -> Self {
+        FredApiError {
+            status_code: value.status().unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+            error_message: Some(value.to_string()),
+        }
+    }
+}
+
+impl<T> From<FredApiResponse<T>> for Result<T, FredApiError> {
+    fn from(value: FredApiResponse<T>) -> Self {
+        match value {
+            FredApiResponse::ErrorMessage(e) => Err(FredApiError {
+                error_message: Some(e.error_message),
+                status_code: StatusCode::from_u16(e.error_code)
+                    .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+            }),
+            FredApiResponse::Payload(response) => Ok(response),
+        }
+    }
+}
+
+impl From<FredResponseError> for FredApiError {
+    fn from(value: FredResponseError) -> Self {
+        FredApiError {
+            status_code: StatusCode::from_u16(value.error_code)
+                .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+            error_message: Some(value.error_message),
+        }
+    }
+}
+
+impl IntoResponse for FredApiError {
+    fn into_response(self) -> Response {
+        (
+            self.status_code,
+            Json(self.error_message.unwrap_or_default()),
+        )
+            .into_response()
+    }
+}
 
 pub async fn request_observations_from_fred(
     client: reqwest::Client,
@@ -13,17 +94,17 @@ pub async fn request_observations_from_fred(
     observation_end: Option<NaiveDate>,
     realtime_start: Option<NaiveDate>,
     realtime_end: Option<NaiveDate>,
-) -> Result<Vec<RealtimeObservation>, reqwest::Error> {
+) -> Result<Vec<RealtimeObservation>, FredApiError> {
     let mut observations = Vec::<RealtimeObservation>::new();
     let mut offset: usize = 0usize;
     const LIMIT: usize = 10_000;
-    const FORMAT: &'static str = "%Y-%m-%d";
+    const FORMAT: &str = "%Y-%m-%d";
     loop {
         let mut url =
             reqwest::Url::parse("https://api.stlouisfed.org/fred/series/observations").unwrap();
 
         {
-            let mut pairs = (&mut url).query_pairs_mut();
+            let mut pairs = url.query_pairs_mut();
             pairs
                 .append_pair("api_key", fred_api_key)
                 .append_pair("file_type", "json")
@@ -53,16 +134,22 @@ pub async fn request_observations_from_fred(
             }
             pairs.finish();
         }
-        let req = client.get(url).send().await;
-        let output = req?.json::<FredResponseObservation>().await?;
-        output.observations.iter().for_each(|os| {
+        let fred_response_: Result<FredResponseObservation, FredApiError> = client
+            .get(url)
+            .send()
+            .await?
+            .json::<FredApiResponse<FredResponseObservation>>()
+            .await?
+            .into();
+        let fred_response = fred_response_?;
+        fred_response.observations.iter().for_each(|os| {
             observations.push(RealtimeObservation {
                 date: os.date,
                 value: os.value.clone(),
             });
         });
-        if output.observations.len() >= output.limit {
-            offset += output.observations.len();
+        if fred_response.observations.len() >= fred_response.limit {
+            offset += fred_response.observations.len();
         } else {
             break;
         }
@@ -76,28 +163,22 @@ pub async fn request_series_from_fred(
     client: reqwest::Client,
     fred_api_key: &str,
     series_id: &str,
-) -> Result<FredResponseSeries, StatusCode> {
+) -> Result<FredResponseSeries, FredApiError> {
     let url = reqwest::Url::parse_with_params(
         "https://api.stlouisfed.org/fred/series",
         &[
             ("api_key", fred_api_key),
-            ("file_type", &"json".to_string()),
-            ("series_id", &series_id.to_string()),
+            ("file_type", "json"),
+            ("series_id", series_id),
         ][..],
     )
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let output = client
+    .map_err(|_| FredApiError::default())?;
+    let output: Result<FredResponseSeries, FredApiError> = client
         .get(url)
         .send()
-        .await
-        .map_err(|e| StatusCode::from(e.status().unwrap_or(StatusCode::INTERNAL_SERVER_ERROR)))?
-        .json::<FredResponseSeriesWithError>()
-        .await
-        .map_err(|e| StatusCode::from(e.status().unwrap_or(StatusCode::INTERNAL_SERVER_ERROR)))?;
-    match output {
-        FredResponseSeriesWithError::FredResponseError(e) => {
-            Err(StatusCode::from_u16(e.error_code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR))
-        }
-        FredResponseSeriesWithError::FredResponseSeries(s) => Ok(s),
-    }
+        .await?
+        .json::<FredApiResponse<FredResponseSeries>>()
+        .await?
+        .into();
+    output
 }

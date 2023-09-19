@@ -2,21 +2,21 @@ use std::net::{IpAddr, Ipv4Addr};
 
 use axum::{
     extract::{Query, State},
-    response::IntoResponse,
     routing::get,
-    Router,
+    Json, Router,
 };
 use clap::Parser;
 use hyper::StatusCode;
-use serde::Deserialize;
 use tower_http::{
     compression::CompressionLayer,
     cors::{Any, CorsLayer},
 };
 
 use stlouisfed_fred_web_proxy::{
-    entities::{FredEconomicDataSeries, GetObservationsParams, RealtimeObservation},
-    fred::{request_observations_from_fred, request_series_from_fred},
+    entities::{
+        FredEconomicDataSeries, GetObservationsParams, GetSeriesParams, RealtimeObservation,
+    },
+    fred::{request_observations_from_fred, request_series_from_fred, FredApiError},
     local_cache::RealtimeObservationsDatabase,
 };
 
@@ -26,6 +26,18 @@ struct AppState {
     fred_api_key: String,
     realtime_observations_db: RealtimeObservationsDatabase,
 }
+
+type SharedAppState = std::sync::Arc<std::sync::RwLock<AppState>>;
+
+// impl Default for AppState {
+//     fn default() -> Self {
+//         AppState {
+//             client: Default::default(),
+//             fred_api_key: Default::default(),
+//             realtime_observations_db: None,
+//         }
+//     }
+// }
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -48,18 +60,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = CommandLineInterface::parse();
     let client = reqwest::Client::new();
     let port = cli.port;
-    let app_state = AppState {
-        client: client,
+    let app_state: SharedAppState = std::sync::Arc::new(std::sync::RwLock::new(AppState {
+        client,
         fred_api_key: cli.fred_api_key,
         realtime_observations_db: RealtimeObservationsDatabase::new(&cli.sqlite_db).await?,
-    };
-    app_state.realtime_observations_db.create_tables().await?;
+    }));
+    app_state
+        .write()
+        .unwrap()
+        .realtime_observations_db
+        .create_tables()
+        .await?;
     let app = Router::new()
         .route("/v0/observations", get(get_observations_handler))
         .route("/v0/series", get(get_series_handler))
         .layer(CorsLayer::new().allow_origin(Any))
         .layer(CompressionLayer::new().gzip(true))
-        .with_state(app_state);
+        .with_state(app_state.clone());
     let bind_addr: std::net::SocketAddr =
         std::net::SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), port);
     axum::Server::bind(&bind_addr)
@@ -69,50 +86,46 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-#[derive(Debug, Deserialize)]
-struct GetSeriesParams {
-    series_id: String,
-}
-
 async fn get_series_handler(
+    State(app_state_): State<SharedAppState>,
     Query(params): Query<GetSeriesParams>,
-    State(app_state): State<AppState>,
-) -> Result<impl IntoResponse, StatusCode> {
+) -> Result<Json<FredEconomicDataSeries>, FredApiError> {
+    let app_state: &AppState = &app_state_.read().unwrap();
     let series_response = request_series_from_fred(
         app_state.client.clone(),
         &app_state.fred_api_key,
         &params.series_id,
     )
     .await?;
-    let series: &FredEconomicDataSeries = match series_response.seriess.get(0) {
-        Some(x) => x,
-        None => {
-            return Err(StatusCode::NOT_FOUND);
-        }
-    };
+    let series: &FredEconomicDataSeries = series_response.seriess.get(0).ok_or(FredApiError {
+        status_code: StatusCode::NOT_FOUND,
+        error_message: None,
+    })?;
     let maybe_stored_series = app_state
         .realtime_observations_db
         .get_series(&params.series_id)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    if let Some(stored_series) = maybe_stored_series {
-        dbg!(&stored_series);
+        .await;
+    if let Ok(Some(stored_series)) = maybe_stored_series {
         if stored_series.last_updated < series.last_updated {
             // update stored version
             app_state
                 .realtime_observations_db
                 .put_series(&series)
                 .await
-                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+                .map_err(|_| FredApiError {
+                    status_code: StatusCode::INTERNAL_SERVER_ERROR,
+                    error_message: Some("database error".into()),
+                })?;
         }
     }
-    Ok(axum::Json(series.clone()))
+    Ok(Json(series.clone()))
 }
 
 async fn get_observations_handler(
     Query(params): Query<GetObservationsParams>,
-    State(app_state): State<AppState>,
-) -> Result<impl IntoResponse, StatusCode> {
+    State(app_state_): State<SharedAppState>,
+) -> Result<Json<Vec<RealtimeObservation>>, FredApiError> {
+    let app_state: &AppState = &app_state_.read().unwrap();
     let mut observations = std::vec::Vec::<RealtimeObservation>::new();
     // if user requested realtime/"ALFRED" data, then do not use local cache
     if params.realtime_start.is_some() || params.realtime_end.is_some() {
@@ -127,8 +140,7 @@ async fn get_observations_handler(
             params.realtime_start,
             params.realtime_end,
         )
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .await?;
         return Ok(axum::Json(fresh));
     }
     let cached = app_state
@@ -139,7 +151,7 @@ async fn get_observations_handler(
             params.observation_end,
         )
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(|_| FredApiError::default())?;
     match (cached.len(), cached.get(0), cached.last()) {
         (0, _, _) | (_, None, None) | (_, None, Some(_)) | (_, Some(_), None) => {
             // cache miss
@@ -152,11 +164,7 @@ async fn get_observations_handler(
                 None,
                 None,
             )
-            .await
-            .map_err(|e| match e.status() {
-                Some(status) => StatusCode::from(status),
-                None => StatusCode::SERVICE_UNAVAILABLE,
-            })?;
+            .await?;
         }
 
         // some cached but possibly incomplete
@@ -175,8 +183,7 @@ async fn get_observations_handler(
                         None,
                         None,
                     )
-                    .await
-                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+                    .await?;
                     if more.len() > 0 {
                         observations.extend_from_slice(&more);
                         is_incomplete = true;
@@ -197,8 +204,7 @@ async fn get_observations_handler(
                         None,
                         None,
                     )
-                    .await
-                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+                    .await?;
                     if more.len() > 0 {
                         observations.extend_from_slice(&more);
                         is_incomplete = true;
@@ -216,11 +222,7 @@ async fn get_observations_handler(
                     None,
                     None,
                 )
-                .await
-                .map_err(|e| match e.status() {
-                    Some(status) => StatusCode::from(status),
-                    None => StatusCode::SERVICE_UNAVAILABLE,
-                })?;
+                .await?;
             }
         }
     }
@@ -228,6 +230,6 @@ async fn get_observations_handler(
         .realtime_observations_db
         .put_observations(&params.series_id, &observations)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(|_| FredApiError::default())?;
     Ok(axum::Json(observations))
 }

@@ -1,4 +1,4 @@
-const YYYY_MM_DD_FORMAT: &'static str = "%Y-%m-%d";
+const YYYY_MM_DD_FORMAT: &str = "%Y-%m-%d";
 
 pub mod yyyy_mm_dd {
     use chrono::NaiveDate;
@@ -45,7 +45,7 @@ pub mod optional_date {
         match s {
             None => Ok(None),
             Some(str) => {
-                if str.len() == 0 {
+                if str.is_empty() {
                     return Ok(None);
                 }
                 match NaiveDate::parse_from_str(&str, super::YYYY_MM_DD_FORMAT) {
@@ -63,8 +63,8 @@ pub mod iso_timestamp_string {
     use serde::{de, ser};
 
     // ex: "2013-07-31 09:26:16-05"
-    const FORMAT_SER: &'static str = "%Y-%m-%d %H:%M:%S%:::z";
-    const FORMAT_DE: &'static str = "%Y-%m-%d %H:%M:%S%#z"; // hack; workaround some bug in chrono
+    const FORMAT_SER: &str = "%Y-%m-%d %H:%M:%S%:::z";
+    const FORMAT_DE: &str = "%Y-%m-%d %H:%M:%S%#z"; // hack; workaround some bug in chrono
 
     /// Serialize a UTC `DateTime` to a timestamp string in the format of "2013-07-31 09:26:16-05".
     pub fn serialize<S>(dt: &DateTime<Utc>, serializer: S) -> Result<S::Ok, S::Error>

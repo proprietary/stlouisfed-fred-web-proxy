@@ -10,6 +10,11 @@ pub struct RealtimeObservation {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct GetSeriesParams {
+    pub series_id: String,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct GetObservationsParams {
     pub series_id: String,
 
@@ -65,6 +70,20 @@ pub struct FredResponseObservation {
     pub limit: usize,
 
     pub observations: std::vec::Vec<ObservationItem>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub enum FredObservationsResponseWithError {
+    Payload(FredResponseObservation),
+    ErrorMessage(FredResponseError),
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub enum FredApiResponse<T> {
+    Payload(T),
+    ErrorMessage(FredResponseError),
 }
 
 /// Response JSON type from FRED API `/fred/series`

@@ -6,7 +6,7 @@ use sqlx::sqlite::{
 
 #[derive(Debug, Clone)]
 pub struct RealtimeObservationsDatabase {
-    pool: Box<SqlitePool>,
+    pool: SqlitePool,
 }
 
 impl RealtimeObservationsDatabase {
@@ -24,7 +24,7 @@ impl RealtimeObservationsDatabase {
             .connect_with(co)
             .await?;
         Ok(RealtimeObservationsDatabase {
-            pool: Box::new(pool),
+            pool: pool,
         })
     }
 
@@ -68,7 +68,7 @@ impl RealtimeObservationsDatabase {
             .bind(since.unwrap_or(NaiveDate::MIN))
             .bind(until.unwrap_or(NaiveDate::MAX))
             .bind(&series_id.to_string())
-            .fetch_all(&(*self.pool).clone())
+            .fetch_all(&self.pool.clone())
             .await?;
         Ok(stream)
     }
@@ -78,7 +78,7 @@ impl RealtimeObservationsDatabase {
         series_id: &str,
         rows: &[RealtimeObservation],
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let mut conn = (*self.pool).acquire().await?;
+        let mut conn = self.pool.clone().acquire().await?;
         for row in rows.iter() {
             let _ = sqlx::query(
                 r#"
@@ -88,7 +88,7 @@ impl RealtimeObservationsDatabase {
             "#,
             )
             .bind(&series_id.to_string())
-            .bind(row.date.clone())
+            .bind(row.date)
             .bind(row.value.clone())
             .execute(&mut *conn)
             .await?;
@@ -100,7 +100,7 @@ impl RealtimeObservationsDatabase {
         &self,
         series: &FredEconomicDataSeries,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let mut conn = self.pool.acquire().await?;
+        let mut conn = self.pool.clone().acquire().await?;
         sqlx::query(
             r#"
         insert into economic_data_series (id, last_updated, observation_start, observation_end)
@@ -108,7 +108,7 @@ impl RealtimeObservationsDatabase {
         "#,
         )
         .bind(&series.id)
-        .bind(&series.last_updated)
+        .bind(series.last_updated)
         .bind(series.observation_start)
         .bind(series.observation_end)
         .execute(&mut *conn)
@@ -128,7 +128,7 @@ impl RealtimeObservationsDatabase {
         where id = ?;
         "#,
         )
-        .bind(&series_id)
+        .bind(series_id)
         .fetch_optional(&mut *conn)
         .await?;
         Ok(res)
