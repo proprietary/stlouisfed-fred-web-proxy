@@ -27,7 +27,7 @@ struct AppState {
     realtime_observations_db: RealtimeObservationsDatabase,
 }
 
-type SharedAppState = std::sync::Arc<std::sync::RwLock<AppState>>;
+// type SharedAppState = std::sync::Arc<std::sync::RwLock<AppState>>;
 
 // impl Default for AppState {
 //     fn default() -> Self {
@@ -60,17 +60,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = CommandLineInterface::parse();
     let client = reqwest::Client::new();
     let port = cli.port;
-    let app_state: SharedAppState = std::sync::Arc::new(std::sync::RwLock::new(AppState {
+    let app_state = AppState {
         client,
         fred_api_key: cli.fred_api_key,
         realtime_observations_db: RealtimeObservationsDatabase::new(&cli.sqlite_db).await?,
-    }));
-    app_state
-        .write()
-        .unwrap()
-        .realtime_observations_db
-        .create_tables()
-        .await?;
+    };
+    app_state.realtime_observations_db.create_tables().await?;
     let app = Router::new()
         .route("/v0/observations", get(get_observations_handler))
         .route("/v0/series", get(get_series_handler))
@@ -87,45 +82,53 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 async fn get_series_handler(
-    State(app_state_): State<SharedAppState>,
+    State(app_state): State<AppState>,
     Query(params): Query<GetSeriesParams>,
 ) -> Result<Json<FredEconomicDataSeries>, FredApiError> {
-    let app_state: &AppState = &app_state_.read().unwrap();
     let series_response = request_series_from_fred(
         app_state.client.clone(),
         &app_state.fred_api_key,
         &params.series_id,
     )
     .await?;
-    let series: &FredEconomicDataSeries = series_response.seriess.get(0).ok_or(FredApiError {
-        status_code: StatusCode::NOT_FOUND,
-        error_message: None,
-    })?;
+    let series: FredEconomicDataSeries = series_response
+        .seriess
+        .get(0)
+        .ok_or(FredApiError {
+            status_code: StatusCode::NOT_FOUND,
+            error_message: None,
+        })?
+        .clone();
     let maybe_stored_series = app_state
         .realtime_observations_db
         .get_series(&params.series_id)
-        .await;
-    if let Ok(Some(stored_series)) = maybe_stored_series {
-        if stored_series.last_updated < series.last_updated {
-            // update stored version
+        .await
+        .map_err(|_| FredApiError::default())?;
+    match maybe_stored_series {
+        None => {
             app_state
                 .realtime_observations_db
-                .put_series(&series)
+                .put_series(&series.clone())
                 .await
-                .map_err(|_| FredApiError {
-                    status_code: StatusCode::INTERNAL_SERVER_ERROR,
-                    error_message: Some("database error".into()),
-                })?;
+                .map_err(|_| FredApiError::default())?;
+        }
+        Some(stored_series) => {
+            if stored_series.last_updated < series.last_updated {
+                app_state
+                    .realtime_observations_db
+                    .put_series(&series.clone())
+                    .await
+                    .map_err(|_| FredApiError::default())?;
+            }
         }
     }
-    Ok(Json(series.clone()))
+    Ok(Json(series))
 }
 
 async fn get_observations_handler(
+    State(app_state): State<AppState>,
     Query(params): Query<GetObservationsParams>,
-    State(app_state_): State<SharedAppState>,
 ) -> Result<Json<Vec<RealtimeObservation>>, FredApiError> {
-    let app_state: &AppState = &app_state_.read().unwrap();
     let mut observations = std::vec::Vec::<RealtimeObservation>::new();
     // if user requested realtime/"ALFRED" data, then do not use local cache
     if params.realtime_start.is_some() || params.realtime_end.is_some() {

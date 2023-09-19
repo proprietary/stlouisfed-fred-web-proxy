@@ -23,9 +23,7 @@ impl RealtimeObservationsDatabase {
             .acquire_timeout(std::time::Duration::from_secs(30))
             .connect_with(co)
             .await?;
-        Ok(RealtimeObservationsDatabase {
-            pool: pool,
-        })
+        Ok(RealtimeObservationsDatabase { pool: pool })
     }
 
     pub async fn create_tables(&self) -> Result<(), Box<dyn std::error::Error>> {
