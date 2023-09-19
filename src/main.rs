@@ -129,7 +129,6 @@ async fn get_observations_handler(
     State(app_state): State<AppState>,
     Query(params): Query<GetObservationsParams>,
 ) -> Result<Json<Vec<RealtimeObservation>>, FredApiError> {
-    let mut observations = std::vec::Vec::<RealtimeObservation>::new();
     // if user requested realtime/"ALFRED" data, then do not use local cache
     if params.realtime_start.is_some() || params.realtime_end.is_some() {
         // bypass cache
@@ -144,7 +143,7 @@ async fn get_observations_handler(
             params.realtime_end,
         )
         .await?;
-        return Ok(axum::Json(fresh));
+        return Ok(Json(fresh));
     }
     let cached = app_state
         .realtime_observations_db
@@ -155,83 +154,41 @@ async fn get_observations_handler(
         )
         .await
         .map_err(|_| FredApiError::default())?;
-    match (cached.len(), cached.get(0), cached.last()) {
-        (0, _, _) | (_, None, None) | (_, None, Some(_)) | (_, Some(_), None) => {
-            // cache miss
-            observations = request_observations_from_fred(
-                app_state.client.clone(),
-                &app_state.fred_api_key,
-                &params.series_id,
-                params.observation_start,
-                params.observation_end,
-                None,
-                None,
-            )
-            .await?;
-        }
-
-        // some cached but possibly incomplete
-        (_, Some(first_item), Some(last_item)) => {
-            let mut is_incomplete: bool = false;
-
-            // check left side
-            if let Some(observation_start) = params.observation_start {
-                if first_item.date > observation_start {
-                    let more = request_observations_from_fred(
-                        app_state.client.clone(),
-                        &app_state.fred_api_key,
-                        &params.series_id,
-                        Some(observation_start),
-                        Some(first_item.date - chrono::Duration::days(1)),
-                        None,
-                        None,
-                    )
-                    .await?;
-                    if more.len() > 0 {
-                        observations.extend_from_slice(&more);
-                        is_incomplete = true;
-                    }
-                }
-            }
-            observations.extend_from_slice(&cached);
-            // check right side
-            if !is_incomplete && params.observation_end.is_some() {
-                let observation_end = params.observation_end.unwrap();
-                if last_item.date < observation_end {
-                    let more = request_observations_from_fred(
-                        app_state.client.clone(),
-                        &app_state.fred_api_key,
-                        &params.series_id,
-                        Some(last_item.date + chrono::Duration::days(1)),
-                        Some(observation_end),
-                        None,
-                        None,
-                    )
-                    .await?;
-                    if more.len() > 0 {
-                        observations.extend_from_slice(&more);
-                        is_incomplete = true;
-                    }
-                }
-            }
-
-            if is_incomplete {
-                observations = request_observations_from_fred(
-                    app_state.client.clone(),
-                    &app_state.fred_api_key,
-                    &params.series_id,
-                    params.observation_start,
-                    params.observation_end,
-                    None,
-                    None,
-                )
-                .await?;
-            }
-        }
+    // Check if the cache hit by only checking the `observation_end` boundary.
+    // No need to check the beginning. Assume that if the series is present in the database,
+    // it has all historical observations available.
+    if !cached.is_empty()
+        && params.observation_end.is_some()
+        && params.observation_end.unwrap() <= cached.last().unwrap().date
+    {
+        return Ok(Json(cached));
     }
+    // Cache miss--so go out to the FRED API to get the requested observations.
+    let fresh_observations = request_observations_from_fred(
+        app_state.client.clone(),
+        &app_state.fred_api_key,
+        &params.series_id,
+        // only request after the time period we already have stored
+        cached.last().map(|item| item.date),
+        params.observation_end,
+        None,
+        None,
+    )
+    .await?;
+    // Update database with externally-sourced observations.
     app_state
         .realtime_observations_db
-        .put_observations(&params.series_id, &observations)
+        .put_observations(&params.series_id, &fresh_observations)
+        .await
+        .map_err(|_| FredApiError::default())?;
+    // Retrieve again from database so the output is consistent
+    let observations = app_state
+        .realtime_observations_db
+        .get_observations(
+            &params.series_id,
+            params.observation_start,
+            params.observation_end,
+        )
         .await
         .map_err(|_| FredApiError::default())?;
     Ok(axum::Json(observations))

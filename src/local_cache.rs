@@ -23,7 +23,7 @@ impl RealtimeObservationsDatabase {
             .acquire_timeout(std::time::Duration::from_secs(30))
             .connect_with(co)
             .await?;
-        Ok(RealtimeObservationsDatabase { pool: pool })
+        Ok(RealtimeObservationsDatabase { pool })
     }
 
     pub async fn create_tables(&self) -> Result<(), Box<dyn std::error::Error>> {
@@ -60,6 +60,7 @@ impl RealtimeObservationsDatabase {
         where date(`date`) >= date(?)
             and date(`date`) <= date(?)
             and `series_id` = ?
+        order by `date` asc
         "#,
         );
         let stream = query
