@@ -31,6 +31,9 @@ pub struct GetObservationsParams {
     pub realtime_end: Option<NaiveDate>,
 }
 
+/// Error message from the FRED API.
+/// 
+/// See: https://fred.stlouisfed.org/docs/api/fred/errors.html
 #[derive(Debug, Default, Deserialize, Serialize)]
 pub struct FredResponseError {
     pub error_message: String,
@@ -74,13 +77,6 @@ pub struct FredResponseObservation {
 
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
-pub enum FredObservationsResponseWithError {
-    Payload(FredResponseObservation),
-    ErrorMessage(FredResponseError),
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(untagged)]
 pub enum FredApiResponse<T> {
     Payload(T),
     ErrorMessage(FredResponseError),
@@ -95,13 +91,6 @@ pub struct FredResponseSeries {
     #[serde(with = "yyyy_mm_dd")]
     pub realtime_end: NaiveDate,
     pub seriess: Vec<FredEconomicDataSeries>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(untagged)]
-pub enum FredResponseSeriesWithError {
-    FredResponseSeries(FredResponseSeries),
-    FredResponseError(FredResponseError),
 }
 
 #[derive(Default, Debug, Deserialize, Serialize, Clone, sqlx::FromRow)]
