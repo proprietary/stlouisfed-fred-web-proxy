@@ -1,4 +1,4 @@
-use crate::entities::RealtimeObservation;
+use crate::entities::{FredEconomicDataSeries, RealtimeObservation};
 use chrono::NaiveDate;
 use sqlx::sqlite::{
     SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions, SqliteSynchronous,
@@ -35,6 +35,13 @@ impl RealtimeObservationsDatabase {
             date text not null check (date(`date`) > date('1776-07-04') and date(`date`) < date('9999-12-31')),
             value text not null,
             primary key (series_id, date)
+        );
+
+        create table if not exists economic_data_series (
+            id text not null primary key,
+            last_updated timestamp not null,
+            observation_start date not null,
+            observation_end date not null
         );
         "#;
         let mut conn = self.pool.clone().acquire().await?;
@@ -87,5 +94,43 @@ impl RealtimeObservationsDatabase {
             .await?;
         }
         Ok(())
+    }
+
+    pub async fn put_series(
+        &self,
+        series: &FredEconomicDataSeries,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut conn = self.pool.acquire().await?;
+        sqlx::query(
+            r#"
+        insert into economic_data_series (id, last_updated, observation_start, observation_end)
+        values (?, ?, ?, ?)
+        "#,
+        )
+        .bind(&series.id)
+        .bind(&series.last_updated)
+        .bind(series.observation_start)
+        .bind(series.observation_end)
+        .execute(&mut *conn)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn get_series(
+        &self,
+        series_id: &str,
+    ) -> Result<Option<FredEconomicDataSeries>, Box<dyn std::error::Error>> {
+        let mut conn = self.pool.acquire().await?;
+        let res: Option<FredEconomicDataSeries> = sqlx::query_as::<_, FredEconomicDataSeries>(
+            r#"
+        select id, last_updated, observation_start, observation_end
+        from economic_data_series
+        where id = ?;
+        "#,
+        )
+        .bind(&series_id)
+        .fetch_optional(&mut *conn)
+        .await?;
+        Ok(res)
     }
 }

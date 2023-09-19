@@ -9,6 +9,7 @@ use axum::{
 use chrono::NaiveDate;
 use clap::Parser;
 use hyper::StatusCode;
+use serde::Deserialize;
 use tower_http::{
     compression::CompressionLayer,
     cors::{Any, CorsLayer},
@@ -16,7 +17,8 @@ use tower_http::{
 
 use stlouisfed_fred_web_proxy::{
     entities::{
-        FredResponseObservation, FredResponseSeriess, GetObservationsParams, RealtimeObservation,
+        FredEconomicDataSeries, FredResponseObservation, FredResponseSeries,
+        FredResponseSeriesWithError, GetObservationsParams, RealtimeObservation,
     },
     local_cache::RealtimeObservationsDatabase,
 };
@@ -57,6 +59,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     app_state.realtime_observations_db.create_tables().await?;
     let app = Router::new()
         .route("/v0/observations", get(get_observations_handler))
+        .route("/v0/series", get(get_series_handler))
         .layer(CorsLayer::new().allow_origin(Any))
         .layer(CompressionLayer::new().gzip(true))
         .with_state(app_state);
@@ -67,6 +70,41 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await
         .unwrap();
     Ok(())
+}
+
+#[derive(Debug, Deserialize)]
+struct GetSeriesParams {
+    series_id: String,
+}
+
+async fn get_series_handler(
+    Query(params): Query<GetSeriesParams>,
+    State(app_state): State<AppState>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let series_response = request_series_from_fred(&app_state, &params.series_id).await?;
+    let series: &FredEconomicDataSeries = match series_response.seriess.get(0) {
+        Some(x) => x,
+        None => {
+            return Err(StatusCode::NOT_FOUND);
+        }
+    };
+    let maybe_stored_series = app_state
+        .realtime_observations_db
+        .get_series(&params.series_id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if let Some(stored_series) = maybe_stored_series {
+        dbg!(&stored_series);
+        if stored_series.last_updated < series.last_updated {
+            // update stored version
+            app_state
+                .realtime_observations_db
+                .put_series(&series)
+                .await
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        }
+    }
+    Ok(axum::Json(series.clone()))
 }
 
 async fn get_observations_handler(
@@ -184,7 +222,7 @@ async fn get_observations_handler(
         .put_observations(&params.series_id, &observations)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    return Ok(axum::Json(observations));
+    Ok(axum::Json(observations))
 }
 
 async fn request_observations_from_fred(
@@ -253,11 +291,10 @@ async fn request_observations_from_fred(
 
 /// Get an economic data series (really, just the metadata).
 /// See: https://fred.stlouisfed.org/docs/api/fred/series.html
-#[allow(dead_code)]
 async fn request_series_from_fred(
     app_state: &AppState,
     series_id: &str,
-) -> Result<FredResponseSeriess, Box<dyn std::error::Error>> {
+) -> Result<FredResponseSeries, StatusCode> {
     let client = app_state.client.clone();
     let url = reqwest::Url::parse_with_params(
         "https://api.stlouisfed.org/fred/series",
@@ -266,12 +303,20 @@ async fn request_series_from_fred(
             ("file_type", &"json".to_string()),
             ("series_id", &series_id.to_string()),
         ][..],
-    )?;
+    )
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let output = client
         .get(url)
         .send()
-        .await?
-        .json::<FredResponseSeriess>()
-        .await?;
-    return Ok(output);
+        .await
+        .map_err(|e| StatusCode::from(e.status().unwrap_or(StatusCode::INTERNAL_SERVER_ERROR)))?
+        .json::<FredResponseSeriesWithError>()
+        .await
+        .map_err(|e| StatusCode::from(e.status().unwrap_or(StatusCode::INTERNAL_SERVER_ERROR)))?;
+    match output {
+        FredResponseSeriesWithError::FredResponseError(e) => {
+            Err(StatusCode::from_u16(e.error_code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR))
+        }
+        FredResponseSeriesWithError::FredResponseSeries(s) => Ok(s),
+    }
 }
