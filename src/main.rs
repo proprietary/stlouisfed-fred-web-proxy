@@ -181,15 +181,7 @@ async fn get_observations_handler(
         .put_observations(&params.series_id, &fresh_observations)
         .await
         .map_err(|_| FredApiError::default())?;
-    // Retrieve again from database so the output is consistent
-    let observations = app_state
-        .realtime_observations_db
-        .get_observations(
-            &params.series_id,
-            params.observation_start,
-            params.observation_end,
-        )
-        .await
-        .map_err(|_| FredApiError::default())?;
+    let mut observations = cached;
+    observations.extend_from_slice(&fresh_observations);    
     Ok(axum::Json(observations))
 }
