@@ -169,7 +169,9 @@ async fn get_observations_handler(
         &app_state.fred_api_key,
         &params.series_id,
         // only request after the time period we already have stored
-        cached.last().map(|item| item.date),
+        cached
+            .last()
+            .map(|item| item.date + chrono::Duration::days(1)),
         params.observation_end,
         None,
         None,
