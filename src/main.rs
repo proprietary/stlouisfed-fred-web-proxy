@@ -2,6 +2,7 @@ use std::net::{IpAddr, Ipv4Addr};
 
 use axum::{
     extract::{Query, State},
+    response::Redirect,
     routing::get,
     Json, Router,
 };
@@ -69,6 +70,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = Router::new()
         .route("/v0/observations", get(get_observations_handler))
         .route("/v0/series", get(get_series_handler))
+        .route(
+            "/",
+            get(Redirect::temporary(
+                "https://github.com/proprietary/stlouisfed-fred-web-proxy",
+            )),
+        )
         .layer(CorsLayer::new().allow_origin(Any))
         .layer(CompressionLayer::new().gzip(true))
         .with_state(app_state.clone());
